@@ -3,6 +3,7 @@
 #include "loader.h"
 #include "trap.h"
 #include "vm.h"
+#include "timer.h"
 
 struct proc pool[NPROC];
 __attribute__((aligned(16))) char kstack[NPROC][PAGE_SIZE];
@@ -33,6 +34,10 @@ void proc_init(void)
 		/*
 		* LAB1: you may need to initialize your new fields of proc here
 		*/
+		for(int i = 0; i < MAX_SYSCALL_NUM; i++){
+			p->syscall_times[i] = 0;
+		}
+		p->start_time = 0;
 	}
 	idle.kstack = (uint64)boot_stack_top;
 	idle.pid = 0;
@@ -61,6 +66,8 @@ struct proc *allocproc(void)
 found:
 	p->pid = allocpid();
 	p->state = USED;
+	p->start_time = get_cycle();
+	for(int i = 0; i < MAX_SYSCALL_NUM; i++) p->syscall_times[i] = 0;
 	p->pagetable = 0;
 	p->ustack = 0;
 	p->max_page = 0;
