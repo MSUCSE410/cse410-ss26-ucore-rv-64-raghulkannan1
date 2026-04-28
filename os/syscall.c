@@ -272,12 +272,14 @@ uint64 sys_close(int fd)
 
 int sys_fstat(int fd, uint64 ustat)
 {
+	//retreives the currently running process
     struct proc *p = curr_proc();
 
-    // Validate fd
+    // Validate fd - file descriptor
     if (fd < 0 || fd >= FD_BUFFER_SIZE)
         return -1;
 
+		//get strcut file associated with fd
     struct file *f = p->files[fd];
     if (f == NULL || f->type != FD_INODE)
         return -1;
@@ -287,16 +289,18 @@ int sys_fstat(int fd, uint64 ustat)
     uint64 kva = useraddr(p->pagetable, ustat);
     if (kva == 0)
         return -1;
-
+	//every open file descriptor points to an inode, we will read metadata from this inode
     struct inode *ip = f->ip;
 
+	//lock the inode
     ilock(ip);
 
-    st.dev   = 0;
-    st.ino   = ip->inum;
-    st.mode  = (ip->type == T_DIR ? DIR : FILE);
-    st.nlink = ip->nlink;     // You MUST add nlink to struct inode
+    st.dev   = 0; // always zero in this project(single filesystem)
+    st.ino   = ip->inum; // the inode number
+    st.mode  = (ip->type == T_DIR ? DIR : FILE); //based on inode type. 
+    st.nlink = ip->nlink;//number of hard links
 
+	//unlock the inode
     iunlock(ip);
 
     // Copy to user
@@ -307,6 +311,7 @@ int sys_fstat(int fd, uint64 ustat)
 
 int sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint64 flags)
 {
+	//gets the currently running process
     struct proc *p = curr_proc();
     char old[MAX_STR_LEN], new[MAX_STR_LEN];
 
@@ -318,6 +323,7 @@ int sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint6
 
     // Lookup old inode
     struct inode *ip = namei(old);
+	//if file does not exist linking is impossible
     if (ip == NULL)
         return -1;
 
@@ -337,22 +343,25 @@ int sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint6
         return -1;
     }
 
+	//going to modify its directory entries
     ilock(dp);
 
-    // Check if name already exists
+    // Check if new name already exists
     struct inode *exists = dirlookup(dp, name, 0);
+	//if name exists -> fail
     if (exists != NULL) {
         iunlockput(dp);
+		//drop the reference we got from dirlookup
         iput(exists);
         iunlockput(ip);
         return -1;
     }
 
-    // Increase link count
+    // Increment link count on the target inode
     ip->nlink++;
     iupdate(ip);
 
-    // Create directory entry
+    // Create new directory entry
     if (dirlink(dp, name, ip->inum) < 0) {
         ip->nlink--;
         iupdate(ip);
@@ -361,6 +370,7 @@ int sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint6
         return -1;
     }
 
+	//release locks and references, unlock and decrement reference count on inodes
     iunlockput(dp);
     iunlockput(ip);
     return 0;
@@ -369,7 +379,9 @@ int sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint6
 
 int sys_unlinkat(int dirfd, uint64 path, uint64 flags)
 {
+	//gets the currently running process
     struct proc *p = curr_proc();
+	//temporary kernel buffer to store the path string
     char namebuf[MAX_STR_LEN];
 
     if (copyinstr(p->pagetable, namebuf, path, sizeof(namebuf)) < 0)
@@ -379,7 +391,7 @@ int sys_unlinkat(int dirfd, uint64 path, uint64 flags)
     struct inode *dp = nameiparent(namebuf, name);
     if (dp == NULL)
         return -1;
-
+	//lock the parent directory, must lock it to prevent concurrent changes
     ilock(dp);
 
     // Lookup inode
@@ -389,6 +401,7 @@ int sys_unlinkat(int dirfd, uint64 path, uint64 flags)
         return -1;
     }
 
+	//lock the file's inode since we are about to modify its link count
     ilock(ip);
 
     // Remove directory entry
@@ -400,6 +413,7 @@ int sys_unlinkat(int dirfd, uint64 path, uint64 flags)
 
     // Decrement link count
     ip->nlink--;
+	//writes the updated inode to disk
     iupdate(ip);
 
     // If no more links → delete inode + data blocks
@@ -411,6 +425,7 @@ int sys_unlinkat(int dirfd, uint64 path, uint64 flags)
         iput(ip);
     }
 
+	//unlocks parent directory and drops its reference count
     iunlockput(dp);
     return 0;
 }
