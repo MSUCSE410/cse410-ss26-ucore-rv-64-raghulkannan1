@@ -114,6 +114,7 @@ struct inode *ialloc(uint dev, short type)
 		if (dip->type == 0) { // a free inode
 			memset(dip, 0, sizeof(*dip));
 			dip->type = type;
+			dip->nlink = 1;
 			bwrite(bp);
 			brelse(bp);
 			return iget(dev, inum);
@@ -127,6 +128,7 @@ struct inode *ialloc(uint dev, short type)
 // Copy a modified in-memory inode to disk.
 // Must be called after every change to an ip->xxx field
 // that lives on disk.
+
 void iupdate(struct inode *ip)
 {
 	struct buf *bp;
@@ -137,6 +139,7 @@ void iupdate(struct inode *ip)
 	dip->type = ip->type;
 	dip->size = ip->size;
 	// LAB4: you may need to update link count here
+	dip->nlink = ip->nlink;
 	memmove(dip->addrs, ip->addrs, sizeof(ip->addrs));
 	bwrite(bp);
 	brelse(bp);
@@ -190,6 +193,7 @@ void ivalid(struct inode *ip)
 		ip->type = dip->type;
 		ip->size = dip->size;
 		// LAB4: You may need to get lint count here
+        ip->nlink = dip->nlink;
 		memmove(ip->addrs, dip->addrs, sizeof(ip->addrs));
 		brelse(bp);
 		ip->valid = 1;
@@ -197,6 +201,34 @@ void ivalid(struct inode *ip)
 			panic("ivalid: no type");
 	}
 }
+void ilock(struct inode *ip)
+{
+    if (ip == 0 || ip->ref < 1)
+        panic("ilock");
+    if (!ip->valid)
+        ivalid(ip);
+}
+
+void iunlock(struct inode *ip)
+{
+    if (ip == 0 || ip->ref < 1)
+        panic("iunlock");
+    // no actual lock structure in this FS
+}
+
+void iunlockput(struct inode *ip)
+{
+    iunlock(ip);
+    iput(ip);
+}
+
+struct inode *nameiparent(char *path, char *name)
+{
+    // Flat FS: parent is always root, name is full path
+    strncpy(name, path, DIRSIZ);
+    return root_dir();
+}
+
 
 // Drop a reference to an in-memory inode.
 // If that was the last reference, the inode table entry can
@@ -208,7 +240,7 @@ void ivalid(struct inode *ip)
 void iput(struct inode *ip)
 {
 	// LAB4: Unmark the condition and change link count variable name (nlink) if needed
-	if (ip->ref == 1 && ip->valid && 0 /*&& ip->nlink == 0*/) {
+	if (ip->ref == 1 && ip->valid && ip->nlink == 0) {
 		// inode has no links and no other references: truncate and free.
 		itrunc(ip);
 		ip->type = 0;
@@ -429,6 +461,29 @@ int dirlink(struct inode *dp, char *name, uint inum)
 }
 
 // LAB4: You may want to add dirunlink here
+int dirunlink(struct inode *dp, char *name)
+{
+    uint off;
+    struct dirent de;
+
+    if (dp->type != T_DIR)
+        panic("dirunlink not DIR");
+
+    for (off = 0; off < dp->size; off += sizeof(de)) {
+        if (readi(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
+            panic("dirunlink read");
+        if (de.inum == 0)
+            continue;
+        if (strncmp(name, de.name, DIRSIZ) == 0) {
+            // Clear this entry
+            memset(&de, 0, sizeof(de));
+            if (writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
+                panic("dirunlink");
+            return 0;
+        }
+    }
+    return -1;
+}
 
 //Return the inode of the root directory
 struct inode *root_dir()

@@ -5,6 +5,8 @@
 #include "syscall_ids.h"
 #include "timer.h"
 #include "trap.h"
+#include "file.h"
+#include "fs.h"
 
 uint64 console_write(uint64 va, uint64 len)
 {
@@ -177,20 +179,151 @@ uint64 sys_close(int fd)
 	return 0;
 }
 
-int sys_fstat(int fd,uint64 stat){
-	//TODO: your job is to complete the syscall
-	return -1;
+int sys_fstat(int fd, uint64 ustat)
+{
+    struct proc *p = curr_proc();
+
+    // Validate fd
+    if (fd < 0 || fd >= FD_BUFFER_SIZE)
+        return -1;
+
+    struct file *f = p->files[fd];
+    if (f == NULL || f->type != FD_INODE)
+        return -1;
+
+    // Validate user pointer
+    Stat st;
+    uint64 kva = useraddr(p->pagetable, ustat);
+    if (kva == 0)
+        return -1;
+
+    struct inode *ip = f->ip;
+
+    ilock(ip);
+
+    st.dev   = 0;
+    st.ino   = ip->inum;
+    st.mode  = (ip->type == T_DIR ? DIR : FILE);
+    st.nlink = ip->nlink;     // You MUST add nlink to struct inode
+
+    iunlock(ip);
+
+    // Copy to user
+    memmove((void*)kva, &st, sizeof(Stat));
+    return 0;
 }
 
-int sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint64 flags){
-	//TODO: your job is to complete the syscall
-	return -1;
+
+int sys_linkat(int olddirfd, uint64 oldpath, int newdirfd, uint64 newpath, uint64 flags)
+{
+    struct proc *p = curr_proc();
+    char old[MAX_STR_LEN], new[MAX_STR_LEN];
+
+    // Copy paths from user
+    if (copyinstr(p->pagetable, old, oldpath, sizeof(old)) < 0)
+        return -1;
+    if (copyinstr(p->pagetable, new, newpath, sizeof(new)) < 0)
+        return -1;
+
+    // Lookup old inode
+    struct inode *ip = namei(old);
+    if (ip == NULL)
+        return -1;
+
+    ilock(ip);
+
+    // Cannot link directories
+    if (ip->type == T_DIR) {
+        iunlockput(ip);
+        return -1;
+    }
+
+    // Lookup parent of newpath
+    char name[DIRSIZ];
+    struct inode *dp = nameiparent(new, name);
+    if (dp == NULL) {
+        iunlockput(ip);
+        return -1;
+    }
+
+    ilock(dp);
+
+    // Check if name already exists
+    struct inode *exists = dirlookup(dp, name, 0);
+    if (exists != NULL) {
+        iunlockput(dp);
+        iput(exists);
+        iunlockput(ip);
+        return -1;
+    }
+
+    // Increase link count
+    ip->nlink++;
+    iupdate(ip);
+
+    // Create directory entry
+    if (dirlink(dp, name, ip->inum) < 0) {
+        ip->nlink--;
+        iupdate(ip);
+        iunlockput(dp);
+        iunlockput(ip);
+        return -1;
+    }
+
+    iunlockput(dp);
+    iunlockput(ip);
+    return 0;
 }
 
-int sys_unlinkat(int dirfd, uint64 name, uint64 flags){
-	//TODO: your job is to complete the syscall
-	return -1;
+
+int sys_unlinkat(int dirfd, uint64 path, uint64 flags)
+{
+    struct proc *p = curr_proc();
+    char namebuf[MAX_STR_LEN];
+
+    if (copyinstr(p->pagetable, namebuf, path, sizeof(namebuf)) < 0)
+        return -1;
+
+    char name[DIRSIZ];
+    struct inode *dp = nameiparent(namebuf, name);
+    if (dp == NULL)
+        return -1;
+
+    ilock(dp);
+
+    // Lookup inode
+    struct inode *ip = dirlookup(dp, name, 0);
+    if (ip == NULL) {
+        iunlockput(dp);
+        return -1;
+    }
+
+    ilock(ip);
+
+    // Remove directory entry
+    if (dirunlink(dp, name) < 0) {
+        iunlockput(ip);
+        iunlockput(dp);
+        return -1;
+    }
+
+    // Decrement link count
+    ip->nlink--;
+    iupdate(ip);
+
+    // If no more links → delete inode + data blocks
+    if (ip->nlink == 0) {
+        // This triggers freeing in iput()
+        iunlockput(ip);
+    } else {
+        iunlock(ip);
+        iput(ip);
+    }
+
+    iunlockput(dp);
+    return 0;
 }
+
 
 extern char trap_page[];
 
@@ -247,6 +380,7 @@ void syscall()
 		break;
 	case SYS_unlinkat:
 	    ret = sys_unlinkat(args[0],args[1],args[2]);
+		break;
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
 		break;
