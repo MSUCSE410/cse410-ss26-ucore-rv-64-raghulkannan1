@@ -3,6 +3,9 @@
 
 #include "riscv.h"
 #include "types.h"
+#include "queue.h"
+#include "syscall_ids.h"
+#include <limits.h>
 
 #define NPROC (512)
 #define FD_BUFFER_SIZE (16)
@@ -41,10 +44,19 @@ struct proc {
 	struct trapframe *trapframe; // data page for trampoline.S
 	struct context context; // swtch() here to run process
 	uint64 max_page;
+	unsigned int syscall_times[MAX_SYSCALL_NUM];
+	uint64 start_time;
 	struct proc *parent; // Parent process
 	uint64 exit_code;
-	struct file *files
-		[FD_BUFFER_SIZE]; //File descriptor table, using to record the files opened by the process
+	struct file *files[FD_BUFFER_SIZE];
+	long long priority;
+	long long pass;
+	long long stride; // Stride value for stride scheduling
+};
+struct TaskInfo {
+	enum procstate status;	
+	unsigned int syscall_times[MAX_SYSCALL_NUM];
+	int time;
 };
 
 int cpuid();
@@ -65,5 +77,7 @@ int init_stdio(struct proc *);
 int push_argv(struct proc *, char **);
 // swtch.S
 void swtch(struct context *, struct context *);
+int spawn(char *path);
+
 
 #endif // PROC_H

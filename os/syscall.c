@@ -7,6 +7,12 @@
 #include "trap.h"
 #include "file.h"
 #include "fs.h"
+#include "vm.h"
+
+#define PROT_READ 1
+#define PROT_WRITE 2
+#define PROT_EXEC 4
+#define MAP_ANONYMOUS 0x20
 
 uint64 console_write(uint64 va, uint64 len)
 {
@@ -146,14 +152,99 @@ uint64 sys_wait(int pid, uint64 va)
 
 uint64 sys_spawn(uint64 va)
 {
-	// TODO: your job is to complete the sys call
-	return -1;
+    struct proc *p = curr_proc();
+    char path[MAX_STR_LEN];
+
+    if (copyinstr(p->pagetable, path, va, MAX_STR_LEN) < 0)
+        return -1;
+
+    return spawn(path);
+}
+
+uint64 sys_mmap(uint64 start, uint64 len, int port, int flag, int fd)
+{
+	struct proc *p = curr_proc();
+	if (len == 0)
+		return 0;
+	if (port & ~0x7)
+		return -1;
+	if ((port & 0x7) == 0)
+		return -1;
+	if (start % PAGE_SIZE != 0)
+		return -1;
+
+	uint64 npages = PGROUNDUP(len) / PAGE_SIZE;
+	if (npages == 0)
+		return 0;
+
+	for (uint64 i = 0; i < npages; i++) {
+		uint64 va = start + i * PAGE_SIZE;
+		if (walkaddr(p->pagetable, va) != 0)
+			return -1;
+	}
+
+	int perm = PTE_U;
+	if (port & 0x1) perm |= PTE_R;
+	if (port & 0x2) perm |= PTE_W;
+	if (port & 0x4) perm |= PTE_X;
+
+	for (uint64 i = 0; i < npages; i++) {
+		uint64 va = start + i * PAGE_SIZE;
+		void *pa = kalloc();
+		if (pa == 0) {
+			uvmunmap(p->pagetable, start, i, 1);
+			return -1;
+		}
+		memset(pa, 0, PAGE_SIZE);
+		if (mappages(p->pagetable, va, PAGE_SIZE, (uint64)pa, perm) != 0) {
+			kfree(pa);
+			uvmunmap(p->pagetable, start, i, 1);
+			return -1;
+		}
+	}
+
+	uint64 end_page = PGROUNDUP(start + npages * PAGE_SIZE) / PAGE_SIZE;
+	if (end_page > p->max_page)
+		p->max_page = end_page;
+
+	return 0;
+}
+uint64 sys_munmap(uint64 start, uint64 len)
+{
+	struct proc *p = curr_proc();
+	if (len == 0)
+		return 0;
+	if (start % PAGE_SIZE != 0)
+		return -1;
+
+	uint64 npages = PGROUNDUP(len) / PAGE_SIZE;
+	if (npages == 0)
+		return 0;
+
+	for (uint64 i = 0; i < npages; i++) {
+		uint64 va = start + i * PAGE_SIZE;
+		if (walkaddr(p->pagetable, va) == 0)
+			return -1;
+	}
+
+	uvmunmap(p->pagetable, start, npages, 1);
+	return 0;
 }
 
 uint64 sys_set_priority(long long prio)
 {
-	// TODO: your job is to complete the sys call
-	return -1;
+    struct proc *p = curr_proc();
+
+    if (prio < 2 || prio > LLONG_MAX) {
+        return -1;
+    }
+
+    p->priority = prio;
+    // You’re using pass as the accumulated value in scheduler,
+    // so keep stride/pass consistent with your design.
+    // If you want pass increment = BIG_STRIDE / priority:
+    // nothing else needed here; scheduler already does that.
+    return prio;
 }
 
 uint64 sys_openat(uint64 va, uint64 omode, uint64 _flags)
@@ -380,6 +471,12 @@ void syscall()
 		break;
 	case SYS_unlinkat:
 	    ret = sys_unlinkat(args[0],args[1],args[2]);
+		break;
+	case SYS_mmap:
+		ret = sys_mmap(args[0], args[1], (int)args[2], (int)args[3], (int)args[4]);
+		break;
+	case SYS_munmap:
+		ret = sys_munmap(args[0], args[1]);
 		break;
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
