@@ -295,7 +295,8 @@ int deadlock_detect(const int available[LOCK_POOL_SIZE],
                     break;
                 }
             }
-
+			
+			//if a thread can finish, simulate finishing it
             if (can_finish) {
                 finish[t] = 1;        // Mark thread as finishable
                 progress = 1;         // We made progress this round
@@ -329,10 +330,10 @@ int sys_mutex_create(int blocking)
 	}
 	// LAB5: (4-1) You may want to maintain some variables for detect here
 	int mutex_id = m - curr_proc()->mutex_pool;
-    p->available[mutex_id] = 1;   // mutex is initially free
-    for (int t = 0; t < NTHREAD; t++) {
-        p->allocation[t][mutex_id] = 0;
-        p->request[t][mutex_id] = 0;
+    p->available[mutex_id] = 1;   // mark mutex is initially free
+    for (int t = 0; t < NTHREAD; t++) { //initial allocation and request matrices
+        p->allocation[t][mutex_id] = 0; // no thread holds the mutex yet
+        p->request[t][mutex_id] = 0;//no thread is waiting for the mutex yet
     }
 	debugf("create mutex %d", mutex_id);
 	return mutex_id;
@@ -340,8 +341,8 @@ int sys_mutex_create(int blocking)
 
 int sys_mutex_lock(int mutex_id)
 {
-    struct proc *p = curr_proc();
-	int tid = curr_thread()->tid;
+    struct proc *p = curr_proc(); //get process
+	int tid = curr_thread()->tid; //get thread id
 	if (mutex_id < 0 || mutex_id >= curr_proc()->next_mutex_id) {
 		errorf("Unexpected mutex id %d", mutex_id);
 		return -1;
@@ -417,6 +418,7 @@ int sys_semaphore_up(int semaphore_id)
         p->available[semaphore_id] += 1;        // free one unit
     }
 	// LAB5: (4-2) You may want to maintain some variables for detect here
+	//perform actual semaphore up
 	semaphore_up(&curr_proc()->semaphore_pool[semaphore_id]);
 	return 0;
 }
