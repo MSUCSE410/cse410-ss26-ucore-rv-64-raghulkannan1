@@ -4,6 +4,7 @@
 #include "trap.h"
 #include "vm.h"
 #include "queue.h"
+#include "timer.h"
 
 struct proc pool[NPROC];
 __attribute__((aligned(16))) char kstack[NPROC][PAGE_SIZE];
@@ -32,6 +33,10 @@ void proc_init()
 		p->state = UNUSED;
 		p->kstack = (uint64)kstack[p - pool];
 		p->trapframe = (struct trapframe *)trapframe[p - pool];
+		for(int i = 0; i < MAX_SYSCALL_NUM; i++){
+			p->syscall_times[i] = 0;
+		}
+		p->start_time = 0;
 	}
 	idle.kstack = (uint64)boot_stack_top;
 	idle.pid = IDLE_PID;
@@ -67,6 +72,7 @@ void add_task(struct proc *p)
 // If there are no free procs, or a memory allocation fails, return 0.
 struct proc *allocproc()
 {
+
 	struct proc *p;
 	for (p = pool; p < &pool[NPROC]; p++) {
 		if (p->state == UNUSED) {
@@ -79,6 +85,11 @@ found:
 	// init proc
 	p->pid = allocpid();
 	p->state = USED;
+	p->priority = 16;  // default from slides
+	p->pass = 0;       // MUST start at 0
+	p->stride = BIG_STRIDE / p->priority;
+	p->start_time = get_cycle();
+	for(int i = 0; i < MAX_SYSCALL_NUM; i++) p->syscall_times[i] = 0;
 	p->ustack = 0;
 	p->max_page = 0;
 	p->parent = NULL;
@@ -101,27 +112,32 @@ void scheduler()
 {
 	struct proc *p;
 	for (;;) {
-		/*int has_proc = 0;
+
+		struct proc *best = NULL;
+
+		// 🔍 Find process with smallest pass
 		for (p = pool; p < &pool[NPROC]; p++) {
 			if (p->state == RUNNABLE) {
-				has_proc = 1;
-				tracef("swtich to proc %d", p - pool);
-				p->state = RUNNING;
-				current_proc = p;
-				swtch(&idle.context, &p->context);
+				if (best == NULL || p->pass < best->pass) {
+					best = p;
+				}
 			}
 		}
-		if(has_proc == 0) {
-			panic("all app are over!\n");
-		}*/
-		p = fetch_task();
-		if (p == NULL) {
+
+		if (best == NULL) {
 			panic("all app are over!\n");
 		}
-		tracef("swtich to proc %d", p - pool);
-		p->state = RUNNING;
-		current_proc = p;
-		swtch(&idle.context, &p->context);
+
+		tracef("switch to proc %d", best - pool);
+
+		best->state = RUNNING;
+		current_proc = best;
+
+		// 🔁 Context switch
+		swtch(&idle.context, &best->context);
+
+		// CRITICAL: update pass AFTER running
+		best->pass += BIG_STRIDE / best->priority;
 	}
 }
 
@@ -144,7 +160,6 @@ void sched()
 void yield()
 {
 	current_proc->state = RUNNABLE;
-	add_task(current_proc);
 	sched();
 }
 
@@ -184,7 +199,6 @@ int fork()
 	np->trapframe->a0 = 0;
 	np->parent = p;
 	np->state = RUNNABLE;
-	add_task(np);
 	return np->pid;
 }
 
@@ -226,7 +240,6 @@ int wait(int pid, int *code)
 			return -1;
 		}
 		p->state = RUNNABLE;
-		add_task(p);
 		sched();
 	}
 }
